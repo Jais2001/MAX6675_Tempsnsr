@@ -17,14 +17,25 @@ MAX6675_Tempsnsr DUT(
     .o_SPI_CLk(o_SPI_CLk),
     .i_SPI_MISO(i_SPI_MISO)
 );
-
-always
-    #10 i_clk <= ~i_clk;
     
+task  Send_DATA;
+    integer i;
+    begin
+        for (i=0;i<10000;i=i+1) begin
+            i_SPI_MISO <= i % 2;
+            #260;
+        end
+    end
+endtask 
+
 initial begin
     i_reset = 0;
     #1000;
     i_reset = 1;
     #1000;
+    Send_DATA;
 end
+
+always
+    #5 i_clk <= ~i_clk; // 100MHz
 endmodule
