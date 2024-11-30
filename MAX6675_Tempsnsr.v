@@ -2,12 +2,14 @@ module MAX6675_Tempsnsr(
     input wire i_clk, // 100MHz clock
     input wire i_reset,
 
-    output wire [15:0]o_data, // data o/p of module to ext intrfce
+    // output wire [15:0]o_data, // data o/p of module to ext intrfce
 
     //control signals
     output wire o_CS,
     output wire o_SPI_CLk,
-    input wire i_SPI_MISO
+    input wire i_SPI_MISO,
+
+    output wire o_tx_Serial
 );
 
 reg r_CS;
@@ -44,12 +46,36 @@ SPI_Master #(.SPI_MODE(0),.CLKS_PER_HALF_BIT(13)) spi( // o_SPI_CLk - 3.8MHz
     .o_SPI_Clk(o_SPI_CLk),
     .i_SPI_MISO(i_SPI_MISO)
 );
-  
-assign o_CS         = r_CS;
-assign o_data       = r_op_data;
+
+// CLKS_PER_BIT = (Frequency of i_Clock)/(Frequency of UART)
+// Example: 10 MHz Clock, 115200 baud UART
+// (10000000)/(115200) = 87
+
+localparam CLOCK_FREQ = 3000000; // 3MHz - maintaining SPI clock for sending UART
+localparam BAUD_RATE = 115200;
+localparam CLKS_PER_BIT = CLOCK_FREQ/BAUD_RATE;
+
+reg i_Tx_DV = 0;
+reg [7:0] i_Tx_Byte = 0;
+wire w_Tx_Active;
+wire w_Tx_Serial;
+wire w_Tx_Done;
+
+reg r_op_dv;
+
+uart_tx #(.CLKS_PER_BIT(CLKS_PER_BIT)) uart_tx_inst(
+
+    .i_Clock(i_clk),
+    .i_Tx_DV(i_Tx_DV),
+    .i_Tx_Byte(i_Tx_Byte),
+    .o_Tx_Active(w_Tx_Active),
+    .o_Tx_Serial(w_Tx_Serial),
+    .o_Tx_Done(w_Tx_Done)
+);
 
 reg[2:0] r_power_up_counter;
 
+// Purpose : Main FSM for SPI data
 always @(posedge i_clk or negedge i_reset) begin
     if (~i_reset) begin
         r_CS <= 1;
@@ -57,8 +83,10 @@ always @(posedge i_clk or negedge i_reset) begin
         r_power_up_counter <= 0;
         r_temp_count <= 0;
         MAX6675_State <= initial_state;
+        r_op_dv <= 0;
     end else begin
         r_TX_Dev <= 0;
+        r_op_dv <= 0;
         case (MAX6675_State) 
             initial_state:begin // waiting for 100ns(10 clock) just to boot up the sensor
                 if (r_power_up_counter < 3'd5) begin
@@ -108,6 +136,7 @@ always @(posedge i_clk or negedge i_reset) begin
             end
             stop_read : begin
                 r_CS <= 1;
+                r_op_dv <= 1;
                 MAX6675_State <= control_state;
             end
             default: begin
@@ -116,4 +145,49 @@ always @(posedge i_clk or negedge i_reset) begin
         endcase
     end
 end  
+
+reg [2:0] Uart_state;
+localparam wait_state = 3'd0;
+localparam send_state1 = 3'd1;
+localparam send_state2 = 3'd2;
+
+
+// Purpose : Uart Tx FSM
+always @(posedge i_clk or negedge i_reset) begin
+    if (~i_reset) begin
+        Uart_state <= wait_state;
+        i_Tx_DV <= 0;
+    end else begin
+        i_Tx_DV <= 0;
+        if (~w_Tx_Active) begin
+            case (Uart_state)
+                wait_state: begin
+                    if (r_op_dv) begin
+                        Uart_state <= send_state1;
+                    end else begin
+                        Uart_state <= wait_state;
+                    end
+                end
+                send_state1: begin
+                    i_Tx_Byte <= r_op_data[7:0];
+                    i_Tx_DV <= 1;
+                    Uart_state <= send_state2;
+                end
+                send_state2: begin
+                    i_Tx_Byte <= r_op_data[15:8];
+                    i_Tx_DV <= 1;
+                    Uart_state <= wait_state;
+                end
+                default: begin
+                    Uart_state <= wait_state;
+                end
+        endcase
+        end
+    end
+end
+
+assign o_tx_Serial  = w_Tx_Serial;
+assign o_CS         = r_CS;
+// assign o_data       = r_op_data;
+
 endmodule
